@@ -1,6 +1,15 @@
 import numpy as np
 
 # ==========================================
+# LOGGING SETTINGS
+# ==========================================
+
+CONSOLE_LOG_LEVEL = "INFO"
+FILE_LOG_LEVEL = "DEBUG"
+
+LOG_FOLDER = "reports"
+
+# ==========================================
 # TRAJECTORY SETTINGS
 # ==========================================
 
@@ -69,17 +78,6 @@ GRIPPER_OPEN = 60
 GRIPPER_CLOSED = 130
 
 GRIPPER_WAIT = 1.5
-
-# ==========================================
-# SIMULATED ROBOT STATE
-# ==========================================
-
-simulated_q = np.array(
-    [90, 90, 90, 90, 90],
-    dtype=float
-)
-
-simulated_gripper = GRIPPER_OPEN
 
 # ==========================================
 # POSITION FEEDBACK SETTINGS

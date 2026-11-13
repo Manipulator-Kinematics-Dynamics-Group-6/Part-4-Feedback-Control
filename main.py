@@ -30,6 +30,10 @@ import dofbot_controller as controller
 import constants as const
 import dofbot_tracking as tracking_data
 import matplotlib.pyplot as plt
+import logging
+import json
+from pathlib import Path
+from datetime import datetime
 
 
 # ==========================================
@@ -207,6 +211,14 @@ def run_commands(visualizer=None):
         if visualizer is not None:
             visualizer.end_sequence()
         
+        
+        # ==========================================
+        # SAVE TRACKING DATA
+        # ==========================================
+
+        tracking.save_csv()
+        tracking.save_report()
+
         # ==========================================
         # DISPLAY TRACKING GRAPHS
         # ==========================================
@@ -236,9 +248,122 @@ def run_commands(visualizer=None):
 
 
 # ==========================================
+# EXPERIMENT LOGGING
+# ==========================================
+
+# Converts log messages into structured JSON records.
+class JSONFormatter(logging.Formatter):
+
+    def format(self, record):
+
+        entry = {
+            "timestamp": datetime.fromtimestamp(
+                record.created
+            ).isoformat(),
+
+            "level": record.levelname,
+            "module": record.module,
+            "message": record.getMessage()
+        }
+
+        if record.exc_info:
+
+            entry["traceback"] = self.formatException(
+                record.exc_info
+            )
+
+        return json.dumps(entry)
+
+
+# Configures console and detailed file logging.
+def setup_logging():
+
+    Path(const.LOG_FOLDER).mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    run_id = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    filepath = Path(const.LOG_FOLDER) / (
+        f"dofbot_{run_id}_events.jsonl"
+    )
+
+    logger = logging.getLogger("dofbot")
+
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    # Avoid duplicate handlers in JupyterLab.
+    for handler in logger.handlers[:]:
+
+        logger.removeHandler(handler)
+        handler.close()
+
+    # ==================================
+    # CONSOLE OUTPUT
+    # ==================================
+
+    console = logging.StreamHandler()
+
+    console.setLevel(
+        getattr(
+            logging,
+            const.CONSOLE_LOG_LEVEL.upper()
+        )
+    )
+
+    console.setFormatter(
+        logging.Formatter("%(levelname)s: %(message)s")
+    )
+
+    logger.addHandler(console)
+
+    # ==================================
+    # JSON EVENT LOG
+    # ==================================
+
+    file_handler = logging.FileHandler(
+        filepath,
+        encoding="utf-8"
+    )
+
+    file_handler.setLevel(
+        getattr(
+            logging,
+            const.FILE_LOG_LEVEL.upper()
+        )
+    )
+
+    file_handler.setFormatter(
+        JSONFormatter()
+    )
+
+    logger.addHandler(file_handler)
+
+    logger.info("Experiment logging initialized")
+    logger.debug("Detailed logging enabled")
+
+    return logger
+
+
+# ==========================================
 # MAIN
 # ==========================================
 
 if __name__ == "__main__":
 
+    # ==========================================
+    # INITIALIZE LOGGING
+    # ==========================================
+
+    logger = setup_logging()
+    logger.info("Starting DOFBOT command sequence")
+    
+    # ==========================================
+    # RUN COMMAND SEQUENCE
+    # ==========================================
+    
     run_commands()
