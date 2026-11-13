@@ -26,15 +26,20 @@ import numpy as np
 # QUICK SETTINGS - EDIT MOST OFTEN
 # ==========================================
 
-# True = simulation only; False = command the physical DOFBOT.
+# True = simulation only; False = command the physical DOFBOT
 TEST = True
 
-# Duration of each MOVE_TO trajectory (seconds).
+# Duration of each MOVE_TO trajectory (seconds)
 TOTAL_TIME = 3
 
-# Select one of the command sequences defined below.
-# To add a sequence, define it in section 2 and select it here.
-# ACTIVE_SEQUENCE is assigned after the sequences are defined.
+# Enable or disable PID feedback control
+PID_ENABLED = True
+
+# Record actual joint feedback once every this many trajectory frames
+TRACKING_INTERVAL = 5
+
+# Calculate PID every this many trajectory frames
+PID_UPDATE_INTERVAL = 5
 
 
 # ==========================================
@@ -90,9 +95,6 @@ JOINT_MAX = np.array([180, 180, 180, 180, 180], dtype=float)
 # FEEDBACK AND POSITION VERIFICATION
 # ==========================================
 
-# Record actual joint feedback once every this many trajectory frames.
-TRACKING_INTERVAL = 5
-
 # Joint target verification.
 JOINT_POSITION_TOL = 3.0       # Degrees
 JOINT_POSITION_TIMEOUT = 5.0   # Seconds
@@ -125,32 +127,25 @@ LINK_LENGTHS = [l0, l1, l2, l3, l4, l5]
 
 
 # ==========================================
+# PID FEEDBACK CONTROL SETTINGS
+# ==========================================
+
+# PID gains for joints 1-5
+KP = np.array([0.5, 0.5, 0.5, 0.5, 0.5])
+KI = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+KD = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+
+PID_MAX_CORRECTION = 2.0
+PID_INTEGRAL_LIMIT = 5.0
+
+
+# ==========================================
 # INVERSE KINEMATICS SETTINGS
 # ==========================================
 
 POSITION_TOL = 1e-4      # Meters
 ORIENTATION_TOL = 1e-3   # Radians
 IK_ATTEMPTS = 24         # Number of solver attempts
-
-
-# ==========================================
-# PID FEEDBACK CONTROL
-# ==========================================
-
-# Enable external joint-position feedback.
-PID_ENABLED = False
-
-# Initial controller gains for joints 1-5.
-# Start with proportional control only.
-KP = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
-KI = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
-KD = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
-
-# Maximum correction added to each joint target.
-PID_MAX_CORRECTION = 2.0  # Degrees
-
-# Limit integral accumulation.
-PID_INTEGRAL_LIMIT = 5.0  # Degree-seconds
 
 
 # ==========================================

@@ -231,128 +231,378 @@ def get_gripper_angle():
             )
         return angle
 
+
+# ==========================================
+# PID FEEDBACK CONTROL
+# ==========================================
+
+# Stores the accumulated error and previous measurement.
+pid_integral = np.zeros(5, dtype=float)
+pid_previous_actual = None
+
+# Initializes or resets the PID controller state.
+def reset_pid():
+    global pid_integral, pid_previous_actual
+
+    pid_integral = np.zeros(5, dtype=float)
+    pid_previous_actual = None
+
+# Calculates the PID position correction for all five joints.
+def calculate_pid(desired_q, actual_q, dt):
+    global pid_integral, pid_previous_actual
+
+    # ==================================
+    # VALIDATE INPUTS
+    # ==================================
+
+    desired_q = np.asarray(desired_q, dtype=float).flatten()
+    actual_q = np.asarray(actual_q, dtype=float).flatten()
+
+    if desired_q.size != 5 or actual_q.size != 5:
+        raise ValueError("PID requires exactly 5 joint angles.")
+
+    if not np.all(np.isfinite(desired_q)):
+        raise ValueError("Desired joint angles contain invalid values.")
+
+    if not np.all(np.isfinite(actual_q)):
+        raise ValueError("Actual joint angles contain invalid values.")
+
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError("PID time step must be positive.")
+
+    # ==================================
+    # CALCULATE POSITION ERROR
+    # ==================================
+
+    error = desired_q - actual_q
+
+    # ==================================
+    # PROPORTIONAL TERM
+    # ==================================
+
+    P = const.KP * error
+
+    # ==================================
+    # INTEGRAL TERM
+    # ==================================
+
+    candidate_integral = np.clip(
+        pid_integral + error * dt,
+        -const.PID_INTEGRAL_LIMIT,
+        const.PID_INTEGRAL_LIMIT
+    )
+
+    # ==================================
+    # DERIVATIVE TERM
+    # ==================================
+
+    # Use derivative on measurement to avoid
+    # large spikes when desired angles change.
+    if pid_previous_actual is None:
+        derivative = np.zeros(5, dtype=float)
+    else:
+        derivative = -(actual_q - pid_previous_actual) / dt
+
+    D = const.KD * derivative
+
+    # ==================================
+    # INTEGRAL ANTI-WINDUP
+    # ==================================
+
+    proposed = P + const.KI * candidate_integral + D
+
+    winding_up = (
+        (proposed > const.PID_MAX_CORRECTION) & (error > 0)
+    ) | (
+        (proposed < -const.PID_MAX_CORRECTION) & (error < 0)
+    )
+
+    pid_integral = np.where(
+        winding_up,
+        pid_integral,
+        candidate_integral
+    )
+
+    I = const.KI * pid_integral
+
+    # ==================================
+    # LIMIT PID CORRECTION
+    # ==================================
+
+    correction = np.clip(
+        P + I + D,
+        -const.PID_MAX_CORRECTION,
+        const.PID_MAX_CORRECTION
+    )
+
+    # ==================================
+    # CALCULATE COMMANDED POSITION
+    # ==================================
+
+    command_q = np.clip(
+        desired_q + correction,
+        const.JOINT_MIN,
+        const.JOINT_MAX
+    )
+
+    # Save measurement for the next update.
+    pid_previous_actual = actual_q.copy()
+
+    logger.debug(
+        "PID | Error: %s | Correction: %s | Command: %s",
+        error.tolist(),
+        correction.tolist(),
+        command_q.tolist()
+    )
+
+    return command_q, error, correction
+
+
+
 # ==========================================
 # EXECUTE TRAJECTORY
 # ==========================================
-# Executes the generated joint trajectory at fixed time intervals.
-# Supports pausing and resuming through the visualizer.
+
+# Executes a trajectory with optional PID feedback control.
+# PID and tracking share the same joint feedback readings.
 def execute_trajectory(gripper_state, visualizer=None, tracking=None):
-    # Time between trajectory samples
+
+    # ==================================
+    # TRAJECTORY SETTINGS
+    # ==================================
+
     dt = const.TOTAL_TIME / (const.N - 1)
-    # Servo movement duration in milliseconds
-    movement_time = max(
-        100,
-        int(dt * 1000)
-    )
-    logger.debug("Starting DOFBOT trajectory...")
-    logger.debug("Trajectory points: %d", const.N)
-    logger.debug("Planned movement time: %.2f seconds", const.TOTAL_TIME)
+    movement_time = max(100, int(dt * 1000))
+
+    feedback_interval = const.PID_UPDATE_INTERVAL
+
+    if feedback_interval < 1:
+        raise ValueError("PID_UPDATE_INTERVAL must be >= 1.")
+
+    # Tracking uses the same feedback update rate.
+    if tracking is not None:
+        if const.TRACKING_INTERVAL != feedback_interval:
+            raise ValueError(
+                "TRACKING_INTERVAL and PID_UPDATE_INTERVAL "
+                "must match to share feedback."
+            )
+
+    # ==================================
+    # INITIALIZE PID
+    # ==================================
+
+    reset_pid()
+
+    correction_q = np.zeros(5, dtype=float)
+
     start_time = time.monotonic()
-    # Total time spent paused
+    last_feedback_time = None
     paused_duration = 0.0
+
+    logger.debug(
+        "Trajectory started | N=%d | Duration=%.2fs | PID=%s",
+        const.N,
+        const.TOTAL_TIME,
+        const.PID_ENABLED
+    )
+
     try:
+        
         for ii in range(const.N):
+
             # ==================================
             # PROCESS VISUALIZER EVENTS
             # ==================================
+
             if visualizer is not None:
                 visualizer.process_events()
+
                 paused_duration += (
                     visualizer.wait_if_paused()
                 )
+
             # ==================================
             # MAINTAIN TRAJECTORY TIMING
             # ==================================
+
             target_time = (
                 start_time
                 + ii * dt
                 + paused_duration
             )
+
             while True:
                 if visualizer is not None:
                     visualizer.process_events()
+
                     pause_time = (
                         visualizer.wait_if_paused()
                     )
+
                     if pause_time > 0:
                         paused_duration += pause_time
                         target_time += pause_time
-                remaining = (
-                    target_time
-                    - time.monotonic()
-                )
+
+                remaining = target_time - time.monotonic()
+
                 if remaining <= 0:
                     break
-                time.sleep(
-                    min(remaining, 0.01)
-                )
+
+                time.sleep(min(remaining, 0.01))
+
             # ==================================
-            # COMMAND ROBOT
+            # DESIRED JOINT CONFIGURATION
             # ==================================
+
             desired_q = kinematics.q[:, ii].copy()
-            command_robot(
-                desired_q,
-                gripper_state,
-                movement_time
+
+            # ==================================
+            # SHARED FEEDBACK UPDATE
+            # ==================================
+
+            feedback_due = (
+                ii % feedback_interval == 0
+                or ii == const.N - 1
             )
-            # ==================================
-            # RECORD TRAJECTORY TRACKING
-            # ==================================
-            if tracking is not None:
-                if (
-                    ii % const.TRACKING_INTERVAL == 0
-                    or ii == const.N - 1
-                ):
-                    actual_q = get_joint_angles()
+
+            if feedback_due and (
+                const.PID_ENABLED or tracking is not None
+            ):
+
+                # Read actual joint positions once.
+                actual_q = get_joint_angles()
+                feedback_time = time.monotonic()
+
+                # Calculate actual feedback interval.
+                if last_feedback_time is None:
+                    dt_feedback = dt
+                else:
+                    dt_feedback = (
+                        feedback_time - last_feedback_time
+                    )
+
+                last_feedback_time = feedback_time
+
+                # ==================================
+                # PID CORRECTION
+                # ==================================
+
+                if const.PID_ENABLED:
+                    command_q, error_q, correction_q = (
+                        calculate_pid(
+                            desired_q,
+                            actual_q,
+                            dt_feedback
+                        )
+                    )
+
+                    # Preserve the effective correction
+                    # after applying joint limits.
+                    correction_q = command_q - desired_q
+
+                    logger.debug(
+                        "PID Frame %d | Error=%s | Correction=%s",
+                        ii,
+                        error_q.tolist(),
+                        correction_q.tolist()
+                    )
+
+                # ==================================
+                # RECORD TRACKING DATA
+                # ==================================
+
+                if tracking is not None:
                     tracking.record(
                         desired_q,
                         actual_q
                     )
-                    logger.debug(
-                        "Frame %d feedback | Desired: %s | Actual: %s",
-                        ii + 1,
-                        desired_q.tolist(),
-                        np.asarray(actual_q).tolist()
-                    )
+
+            # ==================================
+            # CALCULATE COMMANDED POSITION
+            # ==================================
+
+            if const.PID_ENABLED:
+                command_q = np.clip(
+                    desired_q + correction_q,
+                    const.JOINT_MIN,
+                    const.JOINT_MAX
+                )
+
+            else:
+                command_q = desired_q.copy()
+
+            # ==================================
+            # COMMAND ROBOT
+            # ==================================
+
+            command_robot(
+                command_q,
+                gripper_state,
+                movement_time
+            )
+
             # ==================================
             # UPDATE VISUALIZATION
             # ==================================
+
             if visualizer is not None:
                 visualizer.update(ii)
+
             # ==================================
-            # LOG FRAME PROGRESS
+            # LOG FRAME DATA
             # ==================================
+
             logger.debug(
-                "Frame %d/%d | Time: %.2fs",
+                "Frame %d/%d | Time=%.2fs | Desired=%s | Command=%s",
                 ii + 1,
                 const.N,
-                ii * dt
+                ii * dt,
+                desired_q.tolist(),
+                command_q.tolist()
             )
+
         # ==================================
         # VERIFY FINAL JOINT POSITIONS
         # ==================================
-        # Get final desired configuration
+
         target_angles = kinematics.q[:, -1].copy()
+
         logger.debug(
-            "Trajectory commands completed. Verifying final joint positions..."
+            "Trajectory commands sent. Verifying final position."
         )
+
         reached = wait_for_joints(
             target_angles,
             visualizer
         )
+
         if not reached:
+            logger.error(
+                "Trajectory failed final joint verification."
+            )
+
             raise TimeoutError(
                 "Robot failed to reach the final "
                 "joint configuration."
             )
+
         logger.debug(
-            "Trajectory completed successfully!"
+            "Trajectory completed successfully | "
+            "Elapsed=%.3fs",
+            time.monotonic() - start_time
         )
+
     except KeyboardInterrupt:
         logger.warning("Trajectory interrupted by user.")
         raise
+
+    except Exception:
+        logger.exception("Trajectory execution failed.")
+        raise
+
     finally:
-        logger.debug("Controller finished.")
+        logger.debug("Controller trajectory execution finished.")
+
 
 # ==========================================
 # TEST CONFIGURATIONS
