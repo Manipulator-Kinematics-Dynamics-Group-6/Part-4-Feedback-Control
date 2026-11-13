@@ -134,6 +134,26 @@ IK_ATTEMPTS = 24         # Number of solver attempts
 
 
 # ==========================================
+# PID FEEDBACK CONTROL
+# ==========================================
+
+# Enable external joint-position feedback.
+PID_ENABLED = False
+
+# Initial controller gains for joints 1-5.
+# Start with proportional control only.
+KP = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+KI = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+KD = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+
+# Maximum correction added to each joint target.
+PID_MAX_CORRECTION = 2.0  # Degrees
+
+# Limit integral accumulation.
+PID_INTEGRAL_LIMIT = 5.0  # Degree-seconds
+
+
+# ==========================================
 # LOGGING AND REPORT FILES
 # ==========================================
 
