@@ -1,4 +1,23 @@
-"""DOFBOT configuration: edit settings here, not in the control modules."""
+# ==========================================
+# DOFBOT CONFIGURATION AND CONSTANTS
+# ==========================================
+#
+# Description:
+#     Centralizes configuration settings for the Yahboom DOFBOT robotic arm.
+#
+#     Defines robot geometry, joint limits, trajectory parameters, 
+#     and inverse kinematics solver settings.
+#
+#     Configures simulation and hardware operation, servo position tolerances, 
+#     feedback sampling, and logging.
+#
+#     Stores predefined robot command sequences and selects the active 
+#     sequence for execution.
+#
+#     Edit this file to change experiment settings without modifying 
+#     the controller or kinematics modules.
+#
+# ==========================================
 
 import numpy as np
 

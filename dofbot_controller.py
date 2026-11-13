@@ -7,20 +7,13 @@
 #     gripper control, and robot state retrieval.
 #
 #     Supports both simulated and physical operation
-#     through the TEST flag.
-#
-#     TEST = True:
-#         Uses simulated joint and gripper states
-#         without requiring the Arm_Lib library.
-#
-#     TEST = False:
-#         Communicates with the physical DOFBOT
-#         through the Arm_Lib interface.
+#     through the TEST flag in constants.py.
 #
 #     Also manages trajectory timing and simulation
 #     pause/resume functionality.
 #
 # ==========================================
+
 # only needed if running with IPYNB files on Jupyter, comment out otherwise
 # import import_ipynb
 import numpy as np
@@ -137,9 +130,9 @@ def command_robot(joint_angles, gripper_angle, movement_time=2500):
     )
     if const.TEST:
         # Update simulated joint positions
-        const.simulated_q = joint_angles.copy()
+        simulated_q = joint_angles.copy()
         # Update simulated gripper position
-        const.simulated_gripper = float(gripper_angle)
+        simulated_gripper = float(gripper_angle)
     else:
         # Send joint angles to physical DOFBOT
         arm.Arm_serial_servo_write6(
@@ -151,7 +144,7 @@ def command_robot(joint_angles, gripper_angle, movement_time=2500):
 # Reads the current joint angles from the simulation or hardware.
 def get_joint_angles():
     if const.TEST:
-        return const.simulated_q.copy()
+        return simulated_q.copy()
     else:
         time.sleep(.01)
         angles = []
@@ -206,7 +199,7 @@ def command_gripper(angle, movement_time=1000, visualizer=None):
             "Gripper angle must be between 0 and 180."
         )
     if const.TEST:
-        const.simulated_gripper = float(angle)
+        simulated_gripper = float(angle)
     else:
         arm.Arm_serial_servo_write(
             const.GRIPPER_ID,
@@ -226,7 +219,7 @@ def command_gripper(angle, movement_time=1000, visualizer=None):
 # Returns the current gripper servo angle.
 def get_gripper_angle():
     if const.TEST:
-        return const.simulated_gripper
+        return simulated_gripper
     else:
         time.sleep(.01)
         angle = arm.Arm_serial_servo_read(
@@ -332,7 +325,7 @@ def execute_trajectory(gripper_state, visualizer=None, tracking=None):
             logger.debug(
                 "Frame %d/%d | Time: %.2fs",
                 ii + 1,
-                kinematics.N,
+                const.N,
                 ii * dt
             )
         # ==================================

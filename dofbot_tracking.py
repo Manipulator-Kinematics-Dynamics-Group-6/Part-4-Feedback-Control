@@ -1,3 +1,25 @@
+# ==========================================
+# DOFBOT TRAJECTORY TRACKING
+# ==========================================
+#
+# Description:
+#     Records and analyzes the DOFBOT's trajectory execution performance.
+#
+#     Collects desired and actual joint angles, the corresponding
+#     end-effector positions and orientations.
+#
+#     Computes tracking errors and performance metrics, including RMSE, 
+#     maximum error, and final position error.
+#
+#     Exports experiment measurements to CSV and performance summaries to JSON.
+#
+#     Provides interactive graphs for comparing desired and actual trajectories.
+#
+# ==========================================
+
+# only needed if running with IPYNB files on Jupyter, comment out otherwise 
+# import import_ipynb 
+
 import time
 import warnings
 import csv
@@ -8,6 +30,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation
 from pathlib import Path
 from datetime import datetime
+from matplotlib.widgets import Button
 
 import dofbot_kinematics as kinematics
 
@@ -152,148 +175,203 @@ class TrajectoryRecorder:
             )
 
 
-    # Displays the joint, EE pose, and tracking-error graphs.
+    
+    # ==========================================
+    # TRACKING GRAPHS
+    # ==========================================
+
+    # Displays desired and actual tracking in one tabbed window.
     def plot(self):
 
-        if len(self.samples) == 0:
-
-            print("No trajectory tracking data recorded.")
+        if not self.samples:
+            print("No tracking data to plot.")
             return
 
-        t = np.array([
-            sample["time"]
-            for sample in self.samples
-        ])
-
-        q_desired = np.array([
-            sample["desired_q"]
-            for sample in self.samples
-        ])
-
-        q_actual = np.array([
-            sample["actual_q"]
-            for sample in self.samples
-        ])
-
-        p_desired = np.array([
-            sample["desired_p"]
-            for sample in self.samples
-        ])
-
-        p_actual = np.array([
-            sample["actual_p"]
-            for sample in self.samples
-        ])
-
-        rpy_desired = np.array([
-            sample["desired_rpy"]
-            for sample in self.samples
-        ])
-
-        rpy_actual = np.array([
-            sample["actual_rpy"]
-            for sample in self.samples
-        ])
-
-        # Unwrap angular data for continuous plots.
-        rpy_desired = np.rad2deg(
-            np.unwrap(
-                np.deg2rad(rpy_desired),
-                axis=0
-            )
-        )
-
-        rpy_actual = np.rad2deg(
-            np.unwrap(
-                np.deg2rad(rpy_actual),
-                axis=0
-            )
-        )
-
         # ==================================
-        # JOINT ANGLE GRAPHS
+        # PREPARE TRACKING DATA
         # ==================================
 
-        self.plot_components(
-            t,
-            q_desired,
-            q_actual,
-            ["J1", "J2", "J3", "J4", "J5"],
-            "Joint Angles: Desired vs Actual",
-            "Angle (deg)"
-        )
+        t = np.array([s["time"] for s in self.samples])
 
-        # ==================================
-        # END EFFECTOR POSITION GRAPHS
-        # ==================================
+        qd = np.array([s["desired_q"] for s in self.samples])
+        qa = np.array([s["actual_q"] for s in self.samples])
 
-        self.plot_components(
-            t,
-            p_desired * 1000,
-            p_actual * 1000,
-            ["X", "Y", "Z"],
-            "End-Effector Position: Desired vs Actual",
-            "Position (mm)"
-        )
+        pd = np.array([s["desired_p"] for s in self.samples]) * 1000
+        pa = np.array([s["actual_p"] for s in self.samples]) * 1000
 
-        # ==================================
-        # END EFFECTOR ORIENTATION GRAPHS
-        # ==================================
+        rd = np.array([s["desired_rpy"] for s in self.samples])
+        ra = np.array([s["actual_rpy"] for s in self.samples])
 
-        self.plot_components(
-            t,
-            rpy_desired,
-            rpy_actual,
-            ["Roll", "Pitch", "Yaw"],
-            "End-Effector Orientation: Desired vs Actual",
-            "Angle (deg)"
-        )
+        rd = np.rad2deg(np.unwrap(np.deg2rad(rd), axis=0))
+        ra = np.rad2deg(np.unwrap(np.deg2rad(ra), axis=0))
 
-        # ==================================
-        # TRACKING ERROR GRAPHS
-        # ==================================
-
-        joint_error = np.max(
-            np.abs(q_desired - q_actual),
-            axis=1
-        )
-
-        position_error = np.linalg.norm(
-            p_desired - p_actual,
-            axis=1
-        ) * 1000
+        joint_error = np.max(np.abs(qd - qa), axis=1)
+        position_error = np.linalg.norm(pd - pa, axis=1)
 
         orientation_error = np.array([
-            sample["orientation_error"]
-            for sample in self.samples
+            s["orientation_error"] for s in self.samples
         ])
 
-        fig, axes = plt.subplots(
-            3, 1,
-            figsize=(11, 8),
-            sharex=True
-        )
+        # ==================================
+        # CONFIGURE GRAPH TABS
+        # ==================================
 
-        fig.suptitle("Trajectory Tracking Errors")
-
-        error_data = [
-            (joint_error, "Maximum joint error (deg)"),
-            (position_error, "EE position error (mm)"),
-            (orientation_error, "EE orientation error (deg)")
+        tabs = [
+            (
+                "Joints", qd, qa,
+                ["J1", "J2", "J3", "J4", "J5"],
+                "Angle (deg)"
+            ),
+            (
+                "EE Position", pd, pa,
+                ["X", "Y", "Z"],
+                "Position (mm)"
+            ),
+            (
+                "EE Orientation", rd, ra,
+                ["Roll", "Pitch", "Yaw"],
+                "Angle (deg)"
+            ),
+            (
+                "Errors",
+                np.column_stack((
+                    joint_error,
+                    position_error,
+                    orientation_error
+                )),
+                None,
+                [
+                    "Max Joint Error (deg)",
+                    "EE Position Error (mm)",
+                    "EE Orientation Error (deg)"
+                ],
+                ""
+            )
         ]
 
-        for ax, (values, label) in zip(axes, error_data):
+        # ==================================
+        # CREATE SINGLE WINDOW
+        # ==================================
 
-            ax.plot(t, values)
-            ax.set_ylabel(label)
-            ax.grid(True, alpha=0.3)
+        fig = plt.figure(figsize=(12, 9))
 
-            self.mark_commands(ax)
+        try:
+            fig.canvas.manager.set_window_title(
+                "DOFBOT Tracking Analysis"
+            )
+        except (AttributeError, TypeError):
+            pass
 
-        axes[-1].set_xlabel("Elapsed time (s)")
+        buttons = []
+        button_axes = []
 
-        fig.tight_layout()
-        
+        # ==================================
+        # DISPLAY SELECTED TAB
+        # ==================================
+
+        def show_tab(index):
+
+            # Remove existing graphs, keeping the tab buttons.
+            for ax in list(fig.axes):
+                if ax not in button_axes:
+                    fig.delaxes(ax)
+
+            name, desired, actual, labels, ylabel = tabs[index]
+
+            fig.suptitle(
+                f"DOFBOT Tracking - {name}",
+                fontsize=14,
+                y=0.965
+            )
+
+            grid = fig.add_gridspec(
+                len(labels), 1,
+                left=0.15,
+                right=0.96,
+                bottom=0.08,
+                top=0.87,
+                hspace=0.3
+            )
+
+            for ii, label in enumerate(labels):
+
+                ax = fig.add_subplot(grid[ii, 0])
+
+                ax.plot(
+                    t, desired[:, ii],
+                    "--" if actual is not None else "-",
+                    label="Desired" if actual is not None else label
+                )
+
+                if actual is not None:
+                    ax.plot(
+                        t, actual[:, ii],
+                        label="Actual"
+                    )
+                    ax.legend(loc="best", fontsize=8)
+
+                ax.set_ylabel(
+                    f"{label}\n{ylabel}" if ylabel else label
+                )
+
+                ax.grid(True, alpha=0.3)
+
+                # Mark command boundaries.
+                for boundary_time, _ in self.command_boundaries:
+                    ax.axvline(
+                        boundary_time,
+                        color="gray",
+                        alpha=0.4,
+                        linewidth=0.8
+                    )
+
+                if ii == len(labels) - 1:
+                    ax.set_xlabel("Elapsed time (s)")
+
+            # Highlight selected tab.
+            for ii, button in enumerate(buttons):
+                button.ax.set_facecolor(
+                    "0.75" if ii == index else "0.92"
+                )
+
+            fig.canvas.draw_idle()
+
+        # ==================================
+        # CREATE TAB BUTTONS
+        # ==================================
+
+        for ii, tab in enumerate(tabs):
+
+            ax = fig.add_axes([
+                0.035 + ii * 0.245,
+                0.895,
+                0.23,
+                0.045
+            ])
+
+            button_axes.append(ax)
+
+            button = Button(
+                ax,
+                tab[0],
+                color="0.92",
+                hovercolor="0.82"
+            )
+
+            button.on_clicked(
+                lambda event, index=ii: show_tab(index)
+            )
+
+            buttons.append(button)
+
+        # Keep callbacks alive while the window is open.
+        fig._tracking_buttons = buttons
+
+        # Display first tab.
+        show_tab(0)
+
+        return fig
+
     
     # ==========================================
     # EXPORT TRACKING DATA
@@ -666,3 +744,4 @@ class TrajectoryRecorder:
         print("==========================================")
 
         return filepath
+    

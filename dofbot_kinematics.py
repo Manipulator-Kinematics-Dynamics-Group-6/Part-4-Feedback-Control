@@ -1,12 +1,30 @@
+# ==========================================
+# DOFBOT ROBOT KINEMATICS
+# ==========================================
+#
+# Description:
+#     Handles forward and inverse kinematics for the Yahboom DOFBOT robotic arm.
+#
+#     Calculates end-effector position and orientation from joint configurations,
+#     and determines joint configurations for desired end-effector poses.
+#
+#     Also generates joint-space trajectories and stores the corresponding 
+#     end-effector positions and orientations.
+#
+#     Uses robot geometry and solver settings defined in constants.py.
+#
+# ==========================================
+
 # only needed if running with IPYNB files on Jupyter, comment out otherwise 
 # import import_ipynb 
 
-import numpy as np
 import warnings
-import constants as const
 
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
+import numpy as np
+
+import constants as const
 
 
 # ==========================================
