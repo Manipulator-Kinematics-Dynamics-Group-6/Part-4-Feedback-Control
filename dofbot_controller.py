@@ -1,833 +1,472 @@
 # ==========================================
 # DOFBOT ROBOT CONTROLLER
 # ==========================================
-#
-# Description:
-#     Handles trajectory execution, joint commands,
-#     gripper control, and robot state retrieval.
-#
-#     Supports both simulated and physical operation
-#     through the TEST flag in constants.py.
-#
-#     Also manages trajectory timing and simulation
-#     pause/resume functionality.
-#
+# Handles joint and gripper commands, trajectory execution,
+# optional joint-space PID feedback, and simulation.
+# TEST=True uses a configurable first-order simulated servo response.
+# TEST=False uses the physical DOFBOT through Arm_Lib.
+# Settings and gain values are defined in constants.py.
 # ==========================================
 
-# only needed if running with IPYNB files on Jupyter, comment out otherwise
-# import import_ipynb
-import numpy as np
-import time
-import dofbot_kinematics as kinematics
-import constants as const
 import logging
+import time
+import numpy as np
+
+import constants as const
+import dofbot_kinematics as kinematics
+
 
 # ==========================================
 # SETUP LOGGING
 # ==========================================
+
 logger = logging.getLogger("dofbot")
 
+
 # ==========================================
-# SIMULATED ROBOT STATE
+# SIMULATED ROBOT STATE & SERVO DYNAMICS
 # ==========================================
-simulated_q = np.array(
-    [90, 90, 90, 90, 90],
-    dtype=float
-)
-simulated_gripper = const.GRIPPER_OPEN
+
+# These are internal to this module, not stored in constants.py.
+simulated_q = np.array([90, 90, 90, 90, 90], dtype=float)
+simulated_target_q = simulated_q.copy()
+simulated_gripper = float(const.GRIPPER_OPEN)
+simulated_last_update = time.monotonic()
+
+
+# Resets the simulated arm and target to a known configuration.
+def reset_simulation(joint_angles=None, gripper_angle=None):
+    global simulated_q, simulated_target_q, simulated_gripper, simulated_last_update
+
+    if not const.TEST:
+        raise RuntimeError("Simulation reset is only available when TEST=True.")
+
+    if joint_angles is None:
+        joint_angles = [90, 90, 90, 90, 90]
+    angles = np.asarray(joint_angles, dtype=float).flatten()
+    if angles.shape != (5,) or not np.all(np.isfinite(angles)):
+        raise ValueError("Simulation reset requires five finite joint angles.")
+
+    simulated_q = angles.copy()
+    simulated_target_q = angles.copy()
+    simulated_gripper = float(
+        const.GRIPPER_OPEN if gripper_angle is None else gripper_angle
+    )
+    simulated_last_update = time.monotonic()
+
+
+# Advances the simulated joints according to elapsed real time.
+def update_simulated_joints():
+    global simulated_q, simulated_last_update
+
+    if not const.TEST:
+        return
+
+    now = time.monotonic()
+    dt = max(0.0, now - simulated_last_update)
+    simulated_last_update = now
+
+    if not getattr(const, "SIMULATE_SERVO_LAG", False):
+        simulated_q = simulated_target_q.copy()
+        return
+
+    tau = float(const.SIM_SERVO_TAU)
+    if not np.isfinite(tau) or tau <= 0:
+        raise ValueError("SIM_SERVO_TAU must be positive and finite.")
+
+    alpha = 1.0 - np.exp(-dt / tau)
+    simulated_q += alpha * (simulated_target_q - simulated_q)
+
 
 # ==========================================
 # HARDWARE CONNECTION
 # ==========================================
+
 if not const.TEST:
     from Arm_Lib import Arm_Device
     arm = Arm_Device()
 
+
 # ==========================================
 # JOINT CONTROL
 # ==========================================
-# Waits until all five joints reach their desired positions.
+
+# Waits for all five joints to reach their target within tolerance.
 def wait_for_joints(target_angles, visualizer=None):
-    target_angles = np.asarray(
-        target_angles,
-        dtype=float
-    ).flatten()
-    if target_angles.size != 5:
-        raise ValueError(
-            "Target must contain exactly 5 joint angles."
-        )
+    target_angles = np.asarray(target_angles, dtype=float).flatten()
+    if target_angles.shape != (5,) or not np.all(np.isfinite(target_angles)):
+        raise ValueError("Target must contain exactly five finite joint angles.")
+
     start_time = time.monotonic()
     while True:
-        # ==================================
-        # READ CURRENT JOINT POSITIONS
-        # ==================================
-        current_angles = np.asarray(
-            get_joint_angles(),
-            dtype=float
-        )
-        if current_angles.shape != (5,):
-            raise RuntimeError(
-                "Invalid joint feedback received."
-            )
-        if not np.all(np.isfinite(current_angles)):
-            raise RuntimeError(
-                "Joint feedback contains invalid values."
-            )
-        # ==================================
-        # CALCULATE POSITION ERROR
-        # ==================================
-        error = np.abs(
-            target_angles - current_angles
-        )
-        # Check all five joints
-        reached = np.all(
-            error <= const.JOINT_POSITION_TOL
-        )
-        if reached:
-            logger.debug(
-                "All joints reached target positions. Actual: %s | Errors: %s",
-                current_angles.tolist(),
-                error.tolist()
-            )
+        current_angles = np.asarray(get_joint_angles(), dtype=float)
+        if current_angles.shape != (5,) or not np.all(np.isfinite(current_angles)):
+            raise RuntimeError("Invalid joint feedback received.")
+
+        error = np.abs(target_angles - current_angles)
+        if np.all(error <= const.JOINT_POSITION_TOL):
+            logger.debug("Joints reached target | actual=%s | error=%s",
+                         current_angles.tolist(), error.tolist())
             return True
-        # ==================================
-        # CHECK TIMEOUT
-        # ==================================
-        elapsed = (
-            time.monotonic() - start_time
-        )
-        if elapsed >= const.JOINT_POSITION_TIMEOUT:
-            logger.error(
-                "Joint position timeout! Target: %s | Actual: %s | Errors: %s",
-                target_angles.tolist(),
-                current_angles.tolist(),
-                error.tolist()
-            )
+
+        if time.monotonic() - start_time >= const.JOINT_POSITION_TIMEOUT:
+            logger.error("Joint timeout | target=%s | actual=%s | error=%s",
+                         target_angles.tolist(), current_angles.tolist(), error.tolist())
             return False
-        # ==================================
-        # PROCESS VISUALIZATION EVENTS
-        # ==================================
+
         if visualizer is not None:
             visualizer.process_events()
-        time.sleep(
-            const.JOINT_FEEDBACK_INTERVAL
-        )
+        time.sleep(const.JOINT_FEEDBACK_INTERVAL)
 
-# Sends desired joint angles to the simulated or physical robot.
+
+# Sends joint and gripper angles to the simulated or physical arm.
 def command_robot(joint_angles, gripper_angle, movement_time=2500):
-    global simulated_q, simulated_gripper
-    joint_angles = np.asarray(
-        joint_angles,
-        dtype=float
-    ).flatten()
-    if joint_angles.size != 5:
-        raise ValueError(
-            "Joint angles must contain exactly 5 values."
-        )
-    logger.debug(
-        "Joint command: joints_deg=%s gripper_deg=%s duration_ms=%s",
-        joint_angles.tolist(), gripper_angle, movement_time
-    )
+    global simulated_target_q, simulated_gripper
+
+    joint_angles = np.asarray(joint_angles, dtype=float).flatten()
+    if joint_angles.shape != (5,) or not np.all(np.isfinite(joint_angles)):
+        raise ValueError("Joint command must contain exactly five finite angles.")
+
+    logger.debug("Joint command | q=%s | gripper=%.2f | ms=%s",
+                 joint_angles.tolist(), float(gripper_angle), movement_time)
+
     if const.TEST:
-        # Update simulated joint positions
-        simulated_q = joint_angles.copy()
-        # Update simulated gripper position
+        # Advance to 'now' before changing the requested servo positions.
+        update_simulated_joints()
+        simulated_target_q = joint_angles.copy()
         simulated_gripper = float(gripper_angle)
     else:
-        # Send joint angles to physical DOFBOT
         arm.Arm_serial_servo_write6(
-            *joint_angles,
-            gripper_angle,
-            movement_time
+            *joint_angles, gripper_angle, movement_time
         )
 
-# Reads the current joint angles from the simulation or hardware.
+
+# Reads current joint positions, updating simulated dynamics if needed.
 def get_joint_angles():
     if const.TEST:
+        update_simulated_joints()
         return simulated_q.copy()
-    else:
-        time.sleep(.01)
-        angles = []
-        for joint in range(1, 6):
-            angle = arm.Arm_serial_servo_read(
-                joint
-            )
-            if angle is None:
-                raise RuntimeError(
-                    f"Could not read servo {joint}."
-                )
-#                 print("Could not read servo " + joint + ".")
-            angles.append(angle)
-        return np.array(
-            angles,
-            dtype=float
-        )
+
+    time.sleep(0.01)
+    angles = []
+    for joint in range(1, 6):
+        angle = arm.Arm_serial_servo_read(joint)
+        if angle is None:
+            raise RuntimeError(f"Could not read servo {joint}.")
+        angles.append(angle)
+    return np.asarray(angles, dtype=float)
+
 
 # ==========================================
 # GRIPPER CONTROL
 # ==========================================
-# Waits until the gripper reaches its target or times out.
+
+# Waits for the gripper to reach its requested position.
 def wait_for_gripper(target_angle, visualizer=None):
     start_time = time.monotonic()
     while True:
-        current_angle = get_gripper_angle()
-        error = abs(target_angle - current_angle)
+        actual = get_gripper_angle()
+        error = abs(target_angle - actual)
         if error <= const.GRIPPER_POSITION_TOL:
-            logger.debug(
-                "Gripper reached target: %.1f deg (error: %.1f deg)",
-                current_angle,
-                error
-            )
+            logger.debug("Gripper reached target | actual=%.2f | error=%.2f", actual, error)
             return True
+
         if time.monotonic() - start_time >= const.GRIPPER_POSITION_TIMEOUT:
-            logger.error(
-                "Gripper timeout! Target: %.1f deg | Actual: %.1f deg | Error: %.1f deg",
-                target_angle,
-                current_angle,
-                error
-            )
+            logger.error("Gripper timeout | target=%.2f | actual=%.2f | error=%.2f",
+                         target_angle, actual, error)
             return False
+
         if visualizer is not None:
             visualizer.process_events()
         time.sleep(const.GRIPPER_FEEDBACK_INTERVAL)
 
-# Commands the gripper and waits for position feedback.
+
+# Commands the gripper and verifies reported position.
 def command_gripper(angle, movement_time=1000, visualizer=None):
     global simulated_gripper
-    if not 0 <= angle <= 180:
-        raise ValueError(
-            "Gripper angle must be between 0 and 180."
-        )
+    if not np.isfinite(angle) or not 0 <= angle <= 180:
+        raise ValueError("Gripper angle must be between 0 and 180 degrees.")
+
+    logger.debug("Gripper command | target=%.2f | ms=%s", angle, movement_time)
     if const.TEST:
         simulated_gripper = float(angle)
     else:
-        arm.Arm_serial_servo_write(
-            const.GRIPPER_ID,
-            angle,
-            movement_time
-        )
-    # Wait for the target position
-    reached = wait_for_gripper(
-        angle,
-        visualizer
-    )
-    if not reached:
-        raise TimeoutError(
-            "Gripper failed to reach its target."
-        )
+        arm.Arm_serial_servo_write(const.GRIPPER_ID, angle, movement_time)
 
-# Returns the current gripper servo angle.
+    if not wait_for_gripper(angle, visualizer):
+        raise TimeoutError("Gripper failed to reach its target.")
+
+
+# Reads current gripper angle.
 def get_gripper_angle():
     if const.TEST:
         return simulated_gripper
-    else:
-        time.sleep(.01)
-        angle = arm.Arm_serial_servo_read(
-            const.GRIPPER_ID
-        )
-        if angle is None:
-            raise RuntimeError(
-                "Could not read gripper position."
-            )
-        return angle
+
+    time.sleep(0.01)
+    angle = arm.Arm_serial_servo_read(const.GRIPPER_ID)
+    if angle is None:
+        raise RuntimeError("Could not read gripper position.")
+    return angle
 
 
 # ==========================================
 # PID FEEDBACK CONTROL
 # ==========================================
 
-# Stores the accumulated error and previous measurement.
 pid_integral = np.zeros(5, dtype=float)
 pid_previous_actual = None
 
-# Initializes or resets the PID controller state.
+
+# Resets PID state at the start of each movement.
 def reset_pid():
     global pid_integral, pid_previous_actual
-
     pid_integral = np.zeros(5, dtype=float)
     pid_previous_actual = None
 
-# Calculates the PID position correction for all five joints.
+
+# Returns corrected command, tracking error, and correction for five joints.
 def calculate_pid(desired_q, actual_q, dt):
     global pid_integral, pid_previous_actual
 
-    # ==================================
-    # VALIDATE INPUTS
-    # ==================================
-
     desired_q = np.asarray(desired_q, dtype=float).flatten()
     actual_q = np.asarray(actual_q, dtype=float).flatten()
-
-    if desired_q.size != 5 or actual_q.size != 5:
-        raise ValueError("PID requires exactly 5 joint angles.")
-
-    if not np.all(np.isfinite(desired_q)):
-        raise ValueError("Desired joint angles contain invalid values.")
-
-    if not np.all(np.isfinite(actual_q)):
-        raise ValueError("Actual joint angles contain invalid values.")
-
+    if desired_q.shape != (5,) or actual_q.shape != (5,):
+        raise ValueError("PID requires exactly five joint angles.")
+    if not np.all(np.isfinite(desired_q)) or not np.all(np.isfinite(actual_q)):
+        raise ValueError("PID joint angles must be finite.")
     if not np.isfinite(dt) or dt <= 0:
-        raise ValueError("PID time step must be positive.")
-
-    # ==================================
-    # CALCULATE POSITION ERROR
-    # ==================================
+        raise ValueError("PID time step must be positive and finite.")
 
     error = desired_q - actual_q
-
-    # ==================================
-    # PROPORTIONAL TERM
-    # ==================================
-
     P = const.KP * error
-
-    # ==================================
-    # INTEGRAL TERM
-    # ==================================
 
     candidate_integral = np.clip(
         pid_integral + error * dt,
-        -const.PID_INTEGRAL_LIMIT,
-        const.PID_INTEGRAL_LIMIT
+        -const.PID_INTEGRAL_LIMIT, const.PID_INTEGRAL_LIMIT
     )
 
-    # ==================================
-    # DERIVATIVE TERM
-    # ==================================
-
-    # Use derivative on measurement to avoid
-    # large spikes when desired angles change.
+    # Derivative on measured position avoids reference-step kick.
     if pid_previous_actual is None:
         derivative = np.zeros(5, dtype=float)
     else:
         derivative = -(actual_q - pid_previous_actual) / dt
-
     D = const.KD * derivative
 
-    # ==================================
-    # INTEGRAL ANTI-WINDUP
-    # ==================================
-
+    # Conditional integration limits windup at correction saturation.
     proposed = P + const.KI * candidate_integral + D
-
-    winding_up = (
-        (proposed > const.PID_MAX_CORRECTION) & (error > 0)
-    ) | (
-        (proposed < -const.PID_MAX_CORRECTION) & (error < 0)
+    limit = const.PID_MAX_CORRECTION
+    winding_up = ((proposed > limit) & (error > 0)) | (
+        (proposed < -limit) & (error < 0)
     )
+    pid_integral = np.where(winding_up, pid_integral, candidate_integral)
 
-    pid_integral = np.where(
-        winding_up,
-        pid_integral,
-        candidate_integral
-    )
-
-    I = const.KI * pid_integral
-
-    # ==================================
-    # LIMIT PID CORRECTION
-    # ==================================
-
-    correction = np.clip(
-        P + I + D,
-        -const.PID_MAX_CORRECTION,
-        const.PID_MAX_CORRECTION
-    )
-
-    # ==================================
-    # CALCULATE COMMANDED POSITION
-    # ==================================
-
-    command_q = np.clip(
-        desired_q + correction,
-        const.JOINT_MIN,
-        const.JOINT_MAX
-    )
-
-    # Save measurement for the next update.
+    correction = np.clip(P + const.KI * pid_integral + D, -limit, limit)
+    command_q = np.clip(desired_q + correction, const.JOINT_MIN, const.JOINT_MAX)
     pid_previous_actual = actual_q.copy()
 
-    logger.debug(
-        "PID | Error: %s | Correction: %s | Command: %s",
-        error.tolist(),
-        correction.tolist(),
-        command_q.tolist()
-    )
-
+    logger.debug("PID | error=%s | correction=%s | command=%s",
+                 error.tolist(), correction.tolist(), command_q.tolist())
     return command_q, error, correction
-
 
 
 # ==========================================
 # EXECUTE TRAJECTORY
 # ==========================================
 
-# Executes a trajectory with optional PID feedback control.
-# PID and tracking share the same joint feedback readings.
+# Executes the current trajectory with optional PID and shared tracking feedback.
 def execute_trajectory(gripper_state, visualizer=None, tracking=None):
-
-    # ==================================
-    # TRAJECTORY SETTINGS
-    # ==================================
+    if const.N < 2 or const.TOTAL_TIME <= 0:
+        raise ValueError("N must be >=2 and TOTAL_TIME must be positive.")
 
     dt = const.TOTAL_TIME / (const.N - 1)
     movement_time = max(100, int(dt * 1000))
-
     feedback_interval = const.PID_UPDATE_INTERVAL
-
-    if feedback_interval < 1:
-        raise ValueError("PID_UPDATE_INTERVAL must be >= 1.")
-
-    # Tracking uses the same feedback update rate.
-    if tracking is not None:
-        if const.TRACKING_INTERVAL != feedback_interval:
-            raise ValueError(
-                "TRACKING_INTERVAL and PID_UPDATE_INTERVAL "
-                "must match to share feedback."
-            )
-
-    # ==================================
-    # INITIALIZE PID
-    # ==================================
+    if not isinstance(feedback_interval, (int, np.integer)) or feedback_interval < 1:
+        raise ValueError("PID_UPDATE_INTERVAL must be a positive integer.")
+    if tracking is not None and const.TRACKING_INTERVAL != feedback_interval:
+        raise ValueError("TRACKING_INTERVAL must match PID_UPDATE_INTERVAL.")
 
     reset_pid()
-
     correction_q = np.zeros(5, dtype=float)
-
     start_time = time.monotonic()
     last_feedback_time = None
     paused_duration = 0.0
-
-    logger.debug(
-        "Trajectory started | N=%d | Duration=%.2fs | PID=%s",
-        const.N,
-        const.TOTAL_TIME,
-        const.PID_ENABLED
-    )
+    logger.debug("Trajectory started | N=%d | duration=%.2fs | PID=%s | lag=%s",
+                 const.N, const.TOTAL_TIME, const.PID_ENABLED,
+                 const.TEST and getattr(const, "SIMULATE_SERVO_LAG", False))
 
     try:
-        
         for ii in range(const.N):
-
             # ==================================
-            # PROCESS VISUALIZER EVENTS
+            # PROCESS VISUALIZER AND TIMING
             # ==================================
-
             if visualizer is not None:
                 visualizer.process_events()
+                paused_duration += visualizer.wait_if_paused()
 
-                paused_duration += (
-                    visualizer.wait_if_paused()
-                )
-
-            # ==================================
-            # MAINTAIN TRAJECTORY TIMING
-            # ==================================
-
-            target_time = (
-                start_time
-                + ii * dt
-                + paused_duration
-            )
-
+            target_time = start_time + ii * dt + paused_duration
             while True:
                 if visualizer is not None:
                     visualizer.process_events()
-
-                    pause_time = (
-                        visualizer.wait_if_paused()
-                    )
-
+                    pause_time = visualizer.wait_if_paused()
                     if pause_time > 0:
                         paused_duration += pause_time
                         target_time += pause_time
 
                 remaining = target_time - time.monotonic()
-
                 if remaining <= 0:
                     break
-
                 time.sleep(min(remaining, 0.01))
 
             # ==================================
             # DESIRED JOINT CONFIGURATION
             # ==================================
-
             desired_q = kinematics.q[:, ii].copy()
+            feedback_due = (ii % feedback_interval == 0 or ii == const.N - 1)
 
             # ==================================
             # SHARED FEEDBACK UPDATE
             # ==================================
-
-            feedback_due = (
-                ii % feedback_interval == 0
-                or ii == const.N - 1
-            )
-
-            if feedback_due and (
-                const.PID_ENABLED or tracking is not None
-            ):
-
-                # Read actual joint positions once.
+            if feedback_due and (const.PID_ENABLED or tracking is not None):
                 actual_q = get_joint_angles()
                 feedback_time = time.monotonic()
-                
-                # ==================================
-                # ALIGN DESIRED POSITION WITH FEEDBACK
-                # ==================================
 
-                # Elapsed trajectory time, excluding pauses.
-                elapsed = (
-                    feedback_time
-                    - start_time
-                    - paused_duration
-                )
-
-                # Convert elapsed time into trajectory progress.
-                progress = np.clip(
-                    elapsed / const.TOTAL_TIME,
-                    0.0,
-                    1.0
-                )
-
-                # Interpolate desired angles at measurement time.
+                # Align desired position with the instant feedback was sampled.
+                elapsed = feedback_time - start_time - paused_duration
+                progress = np.clip(elapsed / const.TOTAL_TIME, 0.0, 1.0)
                 desired_feedback_q = np.array([
-                    np.interp(
-                        progress,
-                        const.lam,
-                        kinematics.q[joint, :]
-                    )
-                    for joint in range(5)
+                    np.interp(progress, const.lam, kinematics.q[j, :])
+                    for j in range(5)
                 ])
 
-                # Calculate actual feedback interval.
-                if last_feedback_time is None:
-                    dt_feedback = dt
-                else:
-                    dt_feedback = (
-                        feedback_time - last_feedback_time
-                    )
-
+                dt_feedback = (dt if last_feedback_time is None
+                               else feedback_time - last_feedback_time)
                 last_feedback_time = feedback_time
 
-                # ==================================
-                # PID CORRECTION
-                # ==================================
-
                 if const.PID_ENABLED:
-                    command_q, error_q, correction_q = calculate_pid(
-                        desired_feedback_q,
-                        actual_q,
-                        dt_feedback
+                    corrected, error, _ = calculate_pid(
+                        desired_feedback_q, actual_q, dt_feedback
                     )
-
-                    # Preserve the effective correction
-                    # after applying joint limits.
-                    correction_q = command_q - desired_feedback_q
-
-                    logger.debug(
-                        "PID Frame %d | Error=%s | Correction=%s",
-                        ii,
-                        error_q.tolist(),
-                        correction_q.tolist()
-                    )
-
-                # ==================================
-                # RECORD TRACKING DATA
-                # ==================================
+                    correction_q = corrected - desired_feedback_q
+                    logger.debug("PID frame %d | error=%s | effective correction=%s",
+                                 ii, error.tolist(), correction_q.tolist())
 
                 if tracking is not None:
                     tracking.record(
-                        desired_feedback_q,
-                        actual_q,
+                        desired_feedback_q, actual_q,
                         measurement_time=feedback_time
                     )
 
             # ==================================
-            # CALCULATE COMMANDED POSITION
+            # COMMAND ROBOT
             # ==================================
-
             if const.PID_ENABLED:
                 command_q = np.clip(
-                    desired_q + correction_q,
-                    const.JOINT_MIN,
-                    const.JOINT_MAX
+                    desired_q + correction_q, const.JOINT_MIN, const.JOINT_MAX
                 )
-
             else:
                 command_q = desired_q.copy()
 
-            # ==================================
-            # COMMAND ROBOT
-            # ==================================
-
-            command_robot(
-                command_q,
-                gripper_state,
-                movement_time
-            )
-
-            # ==================================
-            # UPDATE VISUALIZATION
-            # ==================================
-
+            command_robot(command_q, gripper_state, movement_time)
             if visualizer is not None:
                 visualizer.update(ii)
 
-            # ==================================
-            # LOG FRAME DATA
-            # ==================================
-
-            logger.debug(
-                "Frame %d/%d | Time=%.2fs | Desired=%s | Command=%s",
-                ii + 1,
-                const.N,
-                ii * dt,
-                desired_q.tolist(),
-                command_q.tolist()
-            )
+            logger.debug("Frame %d/%d | t=%.2fs | desired=%s | commanded=%s",
+                         ii + 1, const.N, ii * dt,
+                         desired_q.tolist(), command_q.tolist())
 
         # ==================================
         # VERIFY FINAL JOINT POSITIONS
         # ==================================
-
         target_angles = kinematics.q[:, -1].copy()
-
-        logger.debug(
-            "Trajectory commands sent. Verifying final position."
-        )
-
-        reached = wait_for_joints(
-            target_angles,
-            visualizer
-        )
-
-        if not reached:
-            logger.error(
-                "Trajectory failed final joint verification."
-            )
-
-            raise TimeoutError(
-                "Robot failed to reach the final "
-                "joint configuration."
-            )
-
-        logger.debug(
-            "Trajectory completed successfully | "
-            "Elapsed=%.3fs",
-            time.monotonic() - start_time
-        )
+        logger.debug("Trajectory sent; checking final joint positions")
+        if not wait_for_joints(target_angles, visualizer):
+            raise TimeoutError("Robot failed to reach the final joint configuration.")
+        logger.debug("Trajectory complete | elapsed=%.3fs",
+                     time.monotonic() - start_time)
 
     except KeyboardInterrupt:
-        logger.warning("Trajectory interrupted by user.")
+        logger.warning("Trajectory interrupted by user")
         raise
-
     except Exception:
-        logger.exception("Trajectory execution failed.")
+        logger.exception("Trajectory execution failed")
         raise
-
     finally:
-        logger.debug("Controller trajectory execution finished.")
+        logger.debug("Controller trajectory execution finished")
 
 
 # ==========================================
 # TEST CONFIGURATIONS
 # ==========================================
-def test_config() :
-    qstart = np.array(
-        [90, 90, 90, 90, 90],
-        dtype=float
-    )
-    qend = np.array(
-        [45, 120, 140, 100, 95],
-        dtype=float
-    )
+
+# Runs controller assertions in simulation only.
+def test_config():
+    assert const.TEST, "Controller tests require TEST=True (no physical movement)."
+    qstart = np.array([90, 90, 90, 90, 90], dtype=float)
+    qend = np.array([45, 120, 140, 100, 95], dtype=float)
+
     print("\n==========================================")
     print("DOFBOT CONTROLLER TEST")
     print("==========================================")
-    # Prevent accidental hardware movement
-    assert const.TEST, (
-        "Controller tests require TEST = True."
-    )
-    # ==========================================
-    # RESET SIMULATED ROBOT STATE
-    # ==========================================
-    const.simulated_q = qstart.copy()
-    const.simulated_gripper = const.GRIPPER_OPEN
-    # ==========================================
-    # TEST 1 - INITIAL ROBOT STATE
-    # ==========================================
-    print("\nTEST 1: Initial robot state")
-    actual_q = get_joint_angles()
-    actual_gripper = get_gripper_angle()
-    assert np.allclose(
-        actual_q,
-        qstart
-    ), (
-        f"Initial joint positions incorrect: {actual_q}"
-    )
-    assert np.isclose(
-        actual_gripper,
-        const.GRIPPER_OPEN
-    ), (
-        f"Initial gripper angle incorrect: {actual_gripper}"
-    )
-    print("PASS: Initial robot state")
-    # ==========================================
-    # TEST 2 - JOINT COMMAND
-    # ==========================================
-    print("\nTEST 2: Joint command")
-    command_robot(
-        qend,
-        const.GRIPPER_OPEN
-    )
-    actual_q = get_joint_angles()
-    assert np.allclose(
-        actual_q,
-        qend
-    ), (
-        f"Joint command failed. "
-        f"Expected: {qend}, Actual: {actual_q}"
-    )
-    print("PASS: Joint command")
-    # ==========================================
-    # TEST 3 - JOINT POSITION FEEDBACK
-    # ==========================================
-    print("\nTEST 3: Joint position feedback")
-    reached = wait_for_joints(
-        qend
-    )
-    assert reached, (
-        "Joint position verification failed."
-    )
-    print("PASS: Joint position feedback")
-    # ==========================================
-    # TEST 4 - TRAJECTORY GENERATION
-    # ==========================================
+
+    print("\nTEST 1: Initial state")
+    reset_simulation(qstart, const.GRIPPER_OPEN)
+    assert np.allclose(get_joint_angles(), qstart)
+    assert np.isclose(get_gripper_angle(), const.GRIPPER_OPEN)
+    print("PASS: Initial state")
+
+    print("\nTEST 2: Joint command updates target")
+    command_robot(qend, const.GRIPPER_OPEN)
+    assert np.allclose(simulated_target_q, qend)
+    if not getattr(const, "SIMULATE_SERVO_LAG", False):
+        assert np.allclose(get_joint_angles(), qend)
+    print("PASS: Joint target command")
+
+    print("\nTEST 3: Joint position feedback / convergence")
+    assert wait_for_joints(qend), "Simulated joints failed to reach target."
+    assert np.all(np.abs(get_joint_angles() - qend) <= const.JOINT_POSITION_TOL)
+    print("PASS: Joint feedback")
+
     print("\nTEST 4: Trajectory generation")
-    kinematics.generate_trajectory(
-        qstart,
-        qend
-    )
-    assert kinematics.q.shape == (
-        5,
-        kinematics.N
-    ), (
-        "Generated trajectory has incorrect dimensions."
-    )
-    assert np.allclose(
-        kinematics.q[:, 0],
-        qstart
-    ), (
-        "Trajectory does not start at qstart."
-    )
-    assert np.allclose(
-        kinematics.q[:, -1],
-        qend
-    ), (
-        "Trajectory does not end at qend."
-    )
-    assert np.all(
-        np.isfinite(kinematics.q)
-    ), (
-        "Trajectory contains invalid numerical values."
-    )
+    kinematics.generate_trajectory(qstart, qend)
+    assert kinematics.q.shape == (5, const.N)
+    assert np.allclose(kinematics.q[:, 0], qstart)
+    assert np.allclose(kinematics.q[:, -1], qend)
+    assert np.all(np.isfinite(kinematics.q))
     print("PASS: Trajectory generation")
-    # ==========================================
-    # TEST 5 - TRAJECTORY EXECUTION
-    # ==========================================
+
     print("\nTEST 5: Trajectory execution")
-    # Reset simulated robot to initial configuration
-    const.simulated_q = qstart.copy()
-    execute_trajectory(
-        const.GRIPPER_OPEN
-    )
-    actual_q = get_joint_angles()
-    joint_error = np.abs(
-        qend - actual_q
-    )
-    assert np.all(
-        joint_error <= const.JOINT_POSITION_TOL
-    ), (
-        f"Trajectory execution failed. "
-        f"Joint errors: {joint_error}"
-    )
+    reset_simulation(qstart, const.GRIPPER_OPEN)
+    execute_trajectory(const.GRIPPER_OPEN)
+    assert np.all(np.abs(get_joint_angles() - qend) <= const.JOINT_POSITION_TOL)
     print("PASS: Trajectory execution")
-    # ==========================================
-    # TEST 6 - FORWARD KINEMATICS
-    # ==========================================
+
     print("\nTEST 6: Forward kinematics")
-    Rot, Pot = kinematics.fwdkin_Dofbot(
-        actual_q
-    )
-    assert Rot.shape == (3, 3), (
-        "Rotation matrix has incorrect dimensions."
-    )
-    assert Pot.shape == (3,), (
-        "End-effector position has incorrect dimensions."
-    )
-    assert np.allclose(
-        Rot.T @ Rot,
-        np.eye(3),
-        atol=1e-6
-    ), (
-        "Rotation matrix is not orthogonal."
-    )
-    assert np.isclose(
-        np.linalg.det(Rot),
-        1.0,
-        atol=1e-6
-    ), (
-        "Rotation matrix has invalid determinant."
-    )
-    assert np.all(
-        np.isfinite(Pot)
-    ), (
-        "End-effector position contains invalid values."
-    )
+    Rot, Pot = kinematics.fwdkin_Dofbot(get_joint_angles())
+    assert Rot.shape == (3, 3) and Pot.shape == (3,)
+    assert np.allclose(Rot.T @ Rot, np.eye(3), atol=1e-6)
+    assert np.isclose(np.linalg.det(Rot), 1.0, atol=1e-6)
+    assert np.all(np.isfinite(Pot))
     print("PASS: Forward kinematics")
-    # ==========================================
-    # TEST 7 - GRIPPER CLOSE
-    # ==========================================
+
     print("\nTEST 7: Gripper close")
-    command_gripper(
-        const.GRIPPER_CLOSED
-    )
-    actual_gripper = get_gripper_angle()
-    assert abs(
-        const.GRIPPER_CLOSED - actual_gripper
-    ) <= const.GRIPPER_POSITION_TOL, (
-        f"Gripper failed to close. "
-        f"Expected: {const.GRIPPER_CLOSED}, "
-        f"Actual: {actual_gripper}"
-    )
+    command_gripper(const.GRIPPER_CLOSED)
+    assert abs(get_gripper_angle() - const.GRIPPER_CLOSED) <= const.GRIPPER_POSITION_TOL
     print("PASS: Gripper close")
-    # ==========================================
-    # TEST 8 - GRIPPER OPEN
-    # ==========================================
+
     print("\nTEST 8: Gripper open")
-    command_gripper(
-        const.GRIPPER_OPEN
-    )
-    actual_gripper = get_gripper_angle()
-    assert abs(
-        const.GRIPPER_OPEN - actual_gripper
-    ) <= const.GRIPPER_POSITION_TOL, (
-        f"Gripper failed to open. "
-        f"Expected: {const.GRIPPER_OPEN}, "
-        f"Actual: {actual_gripper}"
-    )
+    command_gripper(const.GRIPPER_OPEN)
+    assert abs(get_gripper_angle() - const.GRIPPER_OPEN) <= const.GRIPPER_POSITION_TOL
     print("PASS: Gripper open")
-    # ==========================================
-    # TEST COMPLETE
-    # ==========================================
+
     print("\n==========================================")
     print("ALL CONTROLLER TESTS PASSED")
     print("==========================================")
 
+
 # ==========================================
 # MAIN - CONTROLLER TEST
 # ==========================================
+
 if __name__ == "__main__":
     test_config()

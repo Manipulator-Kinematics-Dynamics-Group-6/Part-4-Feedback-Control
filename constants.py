@@ -32,14 +32,17 @@ TEST = True
 # Duration of each MOVE_TO trajectory (seconds)
 TOTAL_TIME = 3
 
-# Enable or disable PID feedback control
-PID_ENABLED = True
-
 # Record actual joint feedback once every this many trajectory frames
 TRACKING_INTERVAL = 5
 
+# Enable or disable PID feedback control
+PID_ENABLED = True
+
 # Calculate PID every this many trajectory frames
 PID_UPDATE_INTERVAL = 5
+
+# Simulate gradual servo movement instead of immediately reaching the commanded position
+SIMULATE_SERVO_LAG = True
 
 
 # ==========================================
@@ -88,6 +91,15 @@ GRIPPER_WAIT = 1.5  # Seconds; retained for existing callers.
 # Joint limits in degrees. Verify against the actual robot before hardware use.
 JOINT_MIN = np.array([0, 0, 0, 0, 0], dtype=float)
 JOINT_MAX = np.array([180, 180, 180, 180, 180], dtype=float)
+
+
+# ==========================================
+# SIMULATED SERVO RESPONSE
+# ==========================================
+
+# Servo response time constant (seconds).
+# Larger values produce slower servo response.
+SIM_SERVO_TAU = 0.15
 
 
 # ==========================================

@@ -119,8 +119,39 @@ def run_commands(visualizer=None):
     move_number = 0
     tracking = tracking_data.TrajectoryRecorder()
 
-    logger.info("DOFBOT sequence started | Mode: %s | Commands: %d",
-                "SIMULATION" if const.TEST else "HARDWARE", total_commands)
+    # ==========================================
+    # EXPERIMENT CONFIGURATION
+    # ==========================================
+
+    logger.info("==========================================")
+    logger.info("DOFBOT SEQUENCE STARTED")
+    logger.info("==========================================")
+
+    # Display simulation or hardware mode.
+    mode = "SIMULATION" if const.TEST else "HARDWARE"
+
+    # Display servo lag only in simulation mode.
+    if const.TEST:
+        lag_status = (
+            "ENABLED" if const.SIMULATE_SERVO_LAG else "DISABLED"
+        )
+
+        mode += f"; Servo lag: {lag_status}"
+
+    logger.info(
+        "Mode: %s | Commands: %d",
+        mode,
+        total_commands
+    )
+
+    logger.info(
+        "PID: %s%s",
+        "ENABLED" if const.PID_ENABLED else "DISABLED",
+        f" | Update every {const.PID_UPDATE_INTERVAL} frames"
+        if const.PID_ENABLED else ""
+    )
+
+    logger.info("==========================================")
 
     # Read initial state; detailed data goes to JSONL only.
     gripper_state = controller.get_gripper_angle()
