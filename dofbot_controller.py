@@ -472,6 +472,34 @@ def execute_trajectory(gripper_state, visualizer=None, tracking=None):
                 # Read actual joint positions once.
                 actual_q = get_joint_angles()
                 feedback_time = time.monotonic()
+                
+                # ==================================
+                # ALIGN DESIRED POSITION WITH FEEDBACK
+                # ==================================
+
+                # Elapsed trajectory time, excluding pauses.
+                elapsed = (
+                    feedback_time
+                    - start_time
+                    - paused_duration
+                )
+
+                # Convert elapsed time into trajectory progress.
+                progress = np.clip(
+                    elapsed / const.TOTAL_TIME,
+                    0.0,
+                    1.0
+                )
+
+                # Interpolate desired angles at measurement time.
+                desired_feedback_q = np.array([
+                    np.interp(
+                        progress,
+                        const.lam,
+                        kinematics.q[joint, :]
+                    )
+                    for joint in range(5)
+                ])
 
                 # Calculate actual feedback interval.
                 if last_feedback_time is None:
@@ -488,17 +516,15 @@ def execute_trajectory(gripper_state, visualizer=None, tracking=None):
                 # ==================================
 
                 if const.PID_ENABLED:
-                    command_q, error_q, correction_q = (
-                        calculate_pid(
-                            desired_q,
-                            actual_q,
-                            dt_feedback
-                        )
+                    command_q, error_q, correction_q = calculate_pid(
+                        desired_feedback_q,
+                        actual_q,
+                        dt_feedback
                     )
 
                     # Preserve the effective correction
                     # after applying joint limits.
-                    correction_q = command_q - desired_q
+                    correction_q = command_q - desired_feedback_q
 
                     logger.debug(
                         "PID Frame %d | Error=%s | Correction=%s",
@@ -513,8 +539,9 @@ def execute_trajectory(gripper_state, visualizer=None, tracking=None):
 
                 if tracking is not None:
                     tracking.record(
-                        desired_q,
-                        actual_q
+                        desired_feedback_q,
+                        actual_q,
+                        measurement_time=feedback_time
                     )
 
             # ==================================

@@ -72,7 +72,7 @@ RESET_OTHER = [
 ]
 
 # Choose the sequence to run (change only this line).
-ACTIVE_SEQUENCE = RESET
+ACTIVE_SEQUENCE = RESET_OTHER
 
 
 # ==========================================
@@ -88,7 +88,6 @@ GRIPPER_WAIT = 1.5  # Seconds; retained for existing callers.
 # Joint limits in degrees. Verify against the actual robot before hardware use.
 JOINT_MIN = np.array([0, 0, 0, 0, 0], dtype=float)
 JOINT_MAX = np.array([180, 180, 180, 180, 180], dtype=float)
-
 
 
 # ==========================================

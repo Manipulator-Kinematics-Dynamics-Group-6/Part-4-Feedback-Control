@@ -61,8 +61,11 @@ class TrajectoryRecorder:
 
 
     # Records joint angles and calculated end-effector poses.
-    def record(self, desired_q, actual_q):
+    def record(self, desired_q, actual_q, measurement_time=None):
 
+        if measurement_time is None:
+            measurement_time = time.monotonic()
+        
         desired_q = np.asarray(
             desired_q, dtype=float
         ).reshape(5)
@@ -109,7 +112,7 @@ class TrajectoryRecorder:
         )
 
         self.samples.append({
-            "time": time.monotonic() - self.start_time,
+            "time": measurement_time - self.start_time,
             "desired_q": desired_q.copy(),
             "actual_q": actual_q.copy(),
             "desired_p": Pot_desired.copy(),
