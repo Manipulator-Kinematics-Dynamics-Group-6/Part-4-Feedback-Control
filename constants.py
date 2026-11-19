@@ -27,7 +27,7 @@ import numpy as np
 # ==========================================
 
 # True = simulation only; False = command the physical DOFBOT
-TEST = True
+TEST = False
 
 # Duration of each MOVE_TO trajectory (seconds)
 TOTAL_TIME = 3
@@ -75,7 +75,7 @@ RESET_OTHER = [
 ]
 
 # Choose the sequence to run (change only this line).
-ACTIVE_SEQUENCE = RESET_OTHER
+ACTIVE_SEQUENCE = RESET
 
 
 # ==========================================
@@ -107,14 +107,16 @@ SIM_SERVO_TAU = 0.15
 # ==========================================
 
 # Joint target verification.
-JOINT_POSITION_TOL = 3.0       # Degrees
+JOINT_POSITION_TOL = 2.0       # Degrees
 JOINT_POSITION_TIMEOUT = 5.0   # Seconds
 JOINT_FEEDBACK_INTERVAL = 0.05 # Seconds between feedback reads
+JOINT_READ_WAIT = 0.07 # Seconds
 
 # Gripper target verification.
-GRIPPER_POSITION_TOL = 3.0       # Degrees
+GRIPPER_POSITION_TOL = 2.0       # Degrees
 GRIPPER_POSITION_TIMEOUT = 5.0   # Seconds
 GRIPPER_FEEDBACK_INTERVAL = 0.05 # Seconds between feedback reads
+GRIPPER_READ_WAIT = 0.07 # Seconds
 
 
 # ==========================================
@@ -142,8 +144,8 @@ LINK_LENGTHS = [l0, l1, l2, l3, l4, l5]
 # ==========================================
 
 # PID gains for joints 1-5
-KP = np.array([0.5, 0.5, 0.5, 0.5, 0.5])
-KI = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+KP = np.array([0.6, 0.7, 0.7, 0.5, 0.4])
+KI = np.array([0.7, 0.5, 0.7, 0.5, 0.6])
 KD = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
 
 PID_MAX_CORRECTION = 2.0
