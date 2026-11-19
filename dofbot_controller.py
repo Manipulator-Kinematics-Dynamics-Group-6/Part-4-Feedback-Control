@@ -147,12 +147,14 @@ def get_joint_angles():
         update_simulated_joints()
         return simulated_q.copy()
 
-    time.sleep(0.01)
+    time.sleep(const.JOINT_READ_WAIT)
     angles = []
     for joint in range(1, 6):
         angle = arm.Arm_serial_servo_read(joint)
         if angle is None:
-            raise RuntimeError(f"Could not read servo {joint}.")
+            angle = arm.Arm_serial_servo_read(joint)
+            if angle is None:
+                raise RuntimeError(f"Could not read servo {joint}.")
         angles.append(angle)
     return np.asarray(angles, dtype=float)
 
@@ -202,7 +204,7 @@ def get_gripper_angle():
     if const.TEST:
         return simulated_gripper
 
-    time.sleep(0.01)
+    time.sleep(const.GRIPPER_READ_WAIT)
     angle = arm.Arm_serial_servo_read(const.GRIPPER_ID)
     if angle is None:
         raise RuntimeError("Could not read gripper position.")
